@@ -1,0 +1,705 @@
+package com.auak.agent.feature.settings
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.auak.agent.R
+import com.auak.agent.core.engine.DoubaoAiProvider
+import com.auak.agent.core.settings.AiSettingsManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.net.HttpURLConnection
+import java.net.URL
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AdvancedSettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val settingsManager = remember { AiSettingsManager(context) }
+    val scope = rememberCoroutineScope()
+
+    var useOwnKey by remember { mutableStateOf(settingsManager.useOwnApiKey) }
+    var apiKey by remember { mutableStateOf(settingsManager.apiKey) }
+    var selectedModel by remember { mutableStateOf(settingsManager.modelId) }
+    var baseUrl by remember { mutableStateOf(settingsManager.baseUrl) }
+    var showApiKey by remember { mutableStateOf(false) }
+    var modelDropdownExpanded by remember { mutableStateOf(false) }
+
+    var agentyAppId by remember { mutableStateOf(settingsManager.agentyAppId) }
+    var agentyAppSecret by remember { mutableStateOf(settingsManager.agentyAppSecret) }
+    var showagentySecret by remember { mutableStateOf(false) }
+
+    var speechAppId by remember { mutableStateOf(settingsManager.speechAppId) }
+    var speechAccessKey by remember { mutableStateOf(settingsManager.speechAccessKey) }
+    var showSpeechKey by remember { mutableStateOf(false) }
+
+    var wakeWordEnabled by remember { mutableStateOf(settingsManager.wakeWordEnabled) }
+    var picovoiceAccessKey by remember { mutableStateOf(settingsManager.picovoiceAccessKey) }
+    var showPicovoiceKey by remember { mutableStateOf(false) }
+
+    var testState by remember { mutableStateOf<TestState>(TestState.Idle) }
+
+    // Model fetching states
+    var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isFetchingModels by remember { mutableStateOf(false) }
+    var fetchModelsError by remember { mutableStateOf<String?>(null) }
+
+    // Effective model list: fetched models if available, otherwise default list
+    val effectiveModels = if (fetchedModels.isNotEmpty()) fetchedModels else AiSettingsManager.AVAILABLE_MODELS
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        stringResource(R.string.advanced_settings_title),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.Key,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stringResource(R.string.ai_api_settings),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.use_own_api_key),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                stringResource(R.string.use_own_api_key_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = useOwnKey,
+                            onCheckedChange = {
+                                useOwnKey = it
+                                settingsManager.useOwnApiKey = it
+                            }
+                        )
+                    }
+
+                    if (useOwnKey) {
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(16.dp))
+
+                        OutlinedTextField(
+                            value = apiKey,
+                            onValueChange = {
+                                apiKey = it
+                                settingsManager.apiKey = it
+                            },
+                            label = { Text(stringResource(R.string.api_key_label)) },
+                            placeholder = { Text(stringResource(R.string.api_key_placeholder)) },
+                            visualTransformation = if (showApiKey)
+                                VisualTransformation.None
+                            else
+                                PasswordVisualTransformation(),
+                            trailingIcon = {
+                                TextButton(onClick = { showApiKey = !showApiKey }) {
+                                    Text(
+                                        if (showApiKey) stringResource(R.string.hide)
+                                        else stringResource(R.string.show)
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        ExposedDropdownMenuBox(
+                            expanded = modelDropdownExpanded,
+                            onExpandedChange = { modelDropdownExpanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedModel,
+                                onValueChange = {
+                                    selectedModel = it
+                                    settingsManager.modelId = it
+                                    if (!modelDropdownExpanded) modelDropdownExpanded = true
+                                },
+                                readOnly = false,
+                                label = { Text(stringResource(R.string.model_id_label)) },
+                                placeholder = { Text(stringResource(R.string.model_id_placeholder)) },
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelDropdownExpanded)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable),
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+
+                            // Filter dropdown list based on user input
+                            val filteredModels = effectiveModels.filter {
+                                it.contains(selectedModel, ignoreCase = true)
+                            }
+                            if (filteredModels.isNotEmpty()) {
+                                ExposedDropdownMenu(
+                                    expanded = modelDropdownExpanded,
+                                    onDismissRequest = { modelDropdownExpanded = false }
+                                ) {
+                                    filteredModels.forEach { model ->
+                                        DropdownMenuItem(
+                                            text = { Text(model) },
+                                            onClick = {
+                                                selectedModel = model
+                                                settingsManager.modelId = model
+                                                modelDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            OutlinedTextField(
+                                value = baseUrl,
+                                onValueChange = {
+                                    baseUrl = it
+                                    settingsManager.baseUrl = it
+                                    // Clear fetched models when URL changes
+                                    fetchedModels = emptyList()
+                                    fetchModelsError = null
+                                },
+                                label = { Text(stringResource(R.string.base_url_label)) },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+
+                            OutlinedButton(
+                                onClick = {
+                                    isFetchingModels = true
+                                    fetchModelsError = null
+                                    scope.launch {
+                                        try {
+                                            val models = fetchModelsFromApi(
+                                                baseUrl = baseUrl.trim(),
+                                                apiKey = apiKey.trim()
+                                            )
+                                            fetchedModels = models
+                                            // Auto-select first model if current selection is not in the list
+                                            if (models.isNotEmpty() && selectedModel !in models) {
+                                                selectedModel = models.first()
+                                                settingsManager.modelId = selectedModel
+                                            }
+                                        } catch (e: Exception) {
+                                            fetchModelsError = e.message ?: "Unknown error"
+                                        } finally {
+                                            isFetchingModels = false
+                                        }
+                                    }
+                                },
+                                enabled = apiKey.isNotBlank() && baseUrl.isNotBlank() && !isFetchingModels,
+                                modifier = Modifier.height(56.dp),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                if (isFetchingModels) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Outlined.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(4.dp))
+                                Text(stringResource(R.string.detect_models))
+                            }
+                        }
+
+                        // Show fetch result feedback
+                        if (fetchedModels.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                stringResource(R.string.models_detected, fetchedModels.size),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        if (fetchModelsError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                stringResource(R.string.fetch_models_error, fetchModelsError!!),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(16.dp))
+
+                        Button(
+                            onClick = {
+                                testState = TestState.Testing
+                                scope.launch {
+                                    testState = try {
+                                        val provider = DoubaoAiProvider(
+                                            apiKey = apiKey.trim(),
+                                            baseUrl = baseUrl.trim(),
+                                            modelId = selectedModel.trim()
+                                        )
+                                        val reply = provider.analyze(
+                                            prompt = "Say hi in one word.",
+                                            screenshotBase64 = null,
+                                            uiNodesJson = null,
+                                            history = emptyList(),
+                                            onToken = null
+                                        )
+                                        if (reply.isNotBlank()) TestState.Success(reply.take(100))
+                                        else TestState.Error("Empty response")
+                                    } catch (e: Exception) {
+                                        TestState.Error(e.message ?: "Unknown error")
+                                    }
+                                }
+                            },
+                            enabled = apiKey.isNotBlank() && selectedModel.isNotBlank()
+                                    && testState !is TestState.Testing,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            if (testState is TestState.Testing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(stringResource(R.string.test_api))
+                        }
+
+                        when (val state = testState) {
+                            is TestState.Success -> {
+                                Spacer(Modifier.height(8.dp))
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        stringResource(R.string.test_api_success, state.reply),
+                                        modifier = Modifier.padding(12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            is TestState.Error -> {
+                                Spacer(Modifier.height(8.dp))
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        stringResource(R.string.test_api_fail, state.message),
+                                        modifier = Modifier.padding(12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            }
+                            else -> {}
+                        }
+                    }
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.Link,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stringResource(R.string.agenty_connection_title),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        stringResource(R.string.agenty_connection_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = agentyAppId,
+                        onValueChange = {
+                            agentyAppId = it
+                            settingsManager.agentyAppId = it
+                        },
+                        label = { Text(stringResource(R.string.agenty_app_id_label)) },
+                        placeholder = { Text(stringResource(R.string.agenty_app_id_placeholder)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = agentyAppSecret,
+                        onValueChange = {
+                            agentyAppSecret = it
+                            settingsManager.agentyAppSecret = it
+                        },
+                        label = { Text(stringResource(R.string.agenty_app_secret_label)) },
+                        placeholder = { Text(stringResource(R.string.agenty_app_secret_placeholder)) },
+                        visualTransformation = if (showagentySecret)
+                            VisualTransformation.None
+                        else
+                            PasswordVisualTransformation(),
+                        trailingIcon = {
+                            TextButton(onClick = { showagentySecret = !showagentySecret }) {
+                                Text(
+                                    if (showagentySecret) stringResource(R.string.hide)
+                                    else stringResource(R.string.show)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            }
+
+            // 语音 API 设置
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.Mic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "语音 API 设置",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        "配置豆包实时语音 API，用于悬浮球双击语音对话。留空则使用内置凭据。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = speechAppId,
+                        onValueChange = {
+                            speechAppId = it
+                            settingsManager.speechAppId = it
+                        },
+                        label = { Text("Speech App ID") },
+                        placeholder = { Text("留空使用默认") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = speechAccessKey,
+                        onValueChange = {
+                            speechAccessKey = it
+                            settingsManager.speechAccessKey = it
+                        },
+                        label = { Text("Speech Access Key") },
+                        placeholder = { Text("留空使用默认") },
+                        visualTransformation = if (showSpeechKey)
+                            VisualTransformation.None
+                        else
+                            PasswordVisualTransformation(),
+                        trailingIcon = {
+                            TextButton(onClick = { showSpeechKey = !showSpeechKey }) {
+                                Text(
+                                    if (showSpeechKey) stringResource(R.string.hide)
+                                    else stringResource(R.string.show)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            }
+
+            // 语音唤醒设置
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.RecordVoiceOver,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "语音唤醒",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        "启用后，对着手机说「你好喵」即可免触控唤醒语音助手。需要悬浮窗服务运行中。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "启用语音唤醒",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                "唤醒词：「你好喵」",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = wakeWordEnabled,
+                            onCheckedChange = {
+                                wakeWordEnabled = it
+                                settingsManager.wakeWordEnabled = it
+                            }
+                        )
+                    }
+
+                    if (wakeWordEnabled && settingsManager.effectivePicovoiceAccessKey.isBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                "缺少 Picovoice Access Key，请在下方填写或在 secrets.properties 中配置 PICOVOICE_ACCESS_KEY",
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = picovoiceAccessKey,
+                        onValueChange = {
+                            picovoiceAccessKey = it
+                            settingsManager.picovoiceAccessKey = it
+                        },
+                        label = { Text("Picovoice Access Key") },
+                        placeholder = { Text("留空使用默认") },
+                        visualTransformation = if (showPicovoiceKey)
+                            VisualTransformation.None
+                        else
+                            PasswordVisualTransformation(),
+                        trailingIcon = {
+                            TextButton(onClick = { showPicovoiceKey = !showPicovoiceKey }) {
+                                Text(
+                                    if (showPicovoiceKey) stringResource(R.string.hide)
+                                    else stringResource(R.string.show)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Fetch available models from OpenAI-compatible /models endpoint.
+ */
+private suspend fun fetchModelsFromApi(baseUrl: String, apiKey: String): List<String> =
+    withContext(Dispatchers.IO) {
+        val url = URL("${baseUrl.trimEnd('/')}/models")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Authorization", "Bearer $apiKey")
+        }
+
+        try {
+            if (conn.responseCode !in 200..299) {
+                val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                throw Exception("HTTP ${conn.responseCode}: $err")
+            }
+
+            val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+            val json = Json { ignoreUnknownKeys = true }
+            val response = json.decodeFromString<JsonObject>(responseText)
+
+            val data = response["data"]?.jsonArray ?: return@withContext emptyList()
+            data.mapNotNull { item ->
+                item.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+            }.sorted()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+private sealed class TestState {
+    data object Idle : TestState()
+    data object Testing : TestState()
+    data class Success(val reply: String) : TestState()
+    data class Error(val message: String) : TestState()
+}

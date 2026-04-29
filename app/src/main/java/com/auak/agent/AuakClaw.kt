@@ -1,0 +1,234 @@
+package com.auak.agent
+
+import android.app.Activity
+import android.app.Application
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import com.auak.agent.core.auth.AuakClawAppAuthManager
+import com.auak.agent.core.auth.agentyAuthManager
+import com.auak.agent.core.database.LocalSkillRepository
+import com.auak.agent.core.database.auak agentyDatabase
+import com.auak.agent.core.engine.*
+import com.auak.agent.core.network.auak agentyApiClient
+import com.auak.agent.core.service.TerminalForegroundService
+import com.auak.agent.core.settings.AiSettingsManager
+import com.auak.agent.core.settings.AppToolManager
+import com.auak.agent.core.socket.agentySocketClient
+import com.auak.agent.core.voice.VoiceSessionManager
+import com.auak.agent.core.voice.WakeWordDetector
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import org.lsposed.hiddenapibypass.HiddenApiBypass
+
+class AuakClawApp : Application() {
+
+    val agentyClient: agentySocketClient by lazy { agentySocketClient() }
+    val authManager: agentyAuthManager by lazy { agentyAuthManager(this) }
+    val AuakClawAppAuth: AuakClawAppAuthManager by lazy { AuakClawAppAuthManager(this) }
+    val deviceCache: DeviceInfoCache by lazy {
+        DeviceInfoCache(agentyClient).also { it.observeConnection() }
+    }
+    val apiClient: auak agentyApiClient by lazy { auak agentyApiClient() }
+    val aiSettings: AiSettingsManager by lazy { AiSettingsManager(this) }
+    val appToolManager: AppToolManager by lazy { AppToolManager(this) }
+
+    val voiceSessionManager: VoiceSessionManager by lazy {
+        VoiceSessionManager(context = this)
+    }
+
+    val wakeWordDetector: WakeWordDetector by lazy {
+        WakeWordDetector(
+            context = this,
+            accessKey = aiSettings.effectivePicovoiceAccessKey,
+            onWakeWordDetected = {
+                Log.i(TAG, "Wake word detected, starting voice session")
+                wakeWordDetector.stop()
+                voiceSessionManager.startSession()
+            }
+        )
+    }
+
+    val database: auak agentyDatabase by lazy { auak agentyDatabase.getInstance(this) }
+    val skillRepository: LocalSkillRepository by lazy { LocalSkillRepository(database.skillDao()) }
+
+    fun resolveAiProvider(): AiProvider? {
+        if (aiSettings.isConfigured) {
+            return DoubaoAiProvider(
+                apiKey = aiSettings.apiKey,
+                baseUrl = aiSettings.baseUrl,
+                modelId = aiSettings.modelId
+            )
+        }
+        if (AuakClawAppAuth.isLoggedIn.value) {
+            return AuakClawAppAiProvider(AuakClawAppAuth)
+        }
+        if (BuildConfig.DOUBAO_API_KEY.isNotBlank()) {
+            return DoubaoAiProvider()
+        }
+        return null
+    }
+
+    val hasAiCapability: Boolean
+        get() = aiSettings.isConfigured || AuakClawAppAuth.isLoggedIn.value || BuildConfig.DOUBAO_API_KEY.isNotBlank()
+
+    private val _loginRequiredEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val loginRequiredEvent: SharedFlow<String> = _loginRequiredEvent.asSharedFlow()
+
+    private val _socketAuthRequiredEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val socketAuthRequiredEvent: SharedFlow<Unit> = _socketAuthRequiredEvent.asSharedFlow()
+
+    private val _recordPermissionEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val recordPermissionEvent: SharedFlow<Unit> = _recordPermissionEvent.asSharedFlow()
+
+    fun requestRecordPermission() {
+        _recordPermissionEvent.tryEmit(Unit)
+    }
+
+    private val _chatActionLabel = MutableStateFlow<String?>(null)
+    val chatActionLabel: StateFlow<String?> = _chatActionLabel.asStateFlow()
+
+    fun updateChatActionLabel(label: String?) {
+        _chatActionLabel.value = label
+    }
+
+    fun requestLogin(reason: String = "需要登录后才能使用 AI 能力") {
+        _loginRequiredEvent.tryEmit(reason)
+    }
+
+    val skillEngine: SkillEngine by lazy {
+        val bridge = SocketCommandBridge(agentyClient, deviceCache)
+        SkillEngine(
+            bridge = bridge,
+            apiClient = apiClient,
+            aiProviderFactory = { resolveAiProvider() },
+            promptHandler = null,
+            toolsContextProvider = { appToolManager.buildToolsContext() }
+        )
+    }
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private var activityCount = 0
+    private val activityLifecycleCallbacks = object : ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityStarted(activity: Activity) {
+            activityCount++
+            Log.d(TAG, "Activity started, count=$activityCount")
+        }
+        override fun onActivityResumed(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivityStopped(activity: Activity) {
+            activityCount--
+            Log.d(TAG, "Activity stopped, count=$activityCount")
+            if (activityCount == 0) {
+                Log.i(TAG, "All activities stopped, stopping terminal service")
+                TerminalForegroundService.stop(this@AuakClawApp)
+            }
+        }
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityDestroyed(activity: Activity) {}
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        if (Build.VERSION.SDK_INT >= 28) {
+            HiddenApiBypass.setHiddenApiExemptions("")
+        }
+        instance = this
+        deviceCache
+        appToolManager.init()
+        connectWithAuth()
+        registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
+    }
+
+    fun connectWithAuth(force: Boolean = false) {
+        Log.d(TAG, "connectWithAuth(force=$force)")
+        appScope.launch {
+            if (AuakClawAppAuth.isLoggedIn.value) {
+                val keyData = AuakClawAppAuth.appKeyData.value
+                if (keyData != null && keyData.appId.isNotBlank()) {
+                    Log.d(TAG, "Using AuakClawApp login key: ${keyData.appId}")
+                    val result = authManager.getToken(keyData.appId, keyData.appSecret)
+                    when (result) {
+                        is agentyAuthManager.TokenResult.Success -> {
+                            agentyClient.connect(result.token, force = force)
+                            return@launch
+                        }
+                        is agentyAuthManager.TokenResult.Failure -> {
+                            Log.w(TAG, "AuakClawApp key auth failed: ${result.message}, trying activate")
+                        }
+                    }
+                }
+                try {
+                    val keyResult = AuakClawAppAuth.activateAppKey()
+                    val activated = keyResult.getOrNull()
+                    if (activated?.success == true && activated.data != null) {
+                        Log.d(TAG, "Activated app key: ${activated.data.appId}")
+                        val result = authManager.getToken(activated.data.appId, activated.data.appSecret)
+                        if (result is agentyAuthManager.TokenResult.Success) {
+                            agentyClient.connect(result.token, force = force)
+                            return@launch
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "App key activation failed: ${e.message}")
+                }
+            }
+
+            if (aiSettings.isagentyConfigured) {
+                Log.d(TAG, "Using user-configured agentyAI key: ${aiSettings.agentyAppId}")
+                val result = authManager.getToken(aiSettings.agentyAppId, aiSettings.agentyAppSecret)
+                when (result) {
+                    is agentyAuthManager.TokenResult.Success -> {
+                        agentyClient.connect(result.token, force = force)
+                        return@launch
+                    }
+                    is agentyAuthManager.TokenResult.Failure -> {
+                        Log.w(TAG, "User agentyAI key auth failed: ${result.message}")
+                    }
+                }
+            }
+
+            if (APP_ID.isNotBlank() && APP_SECRET.isNotBlank()) {
+                val result = authManager.getToken(APP_ID, APP_SECRET)
+                Log.d(TAG, "Token result (secrets): ${result::class.simpleName}")
+                when (result) {
+                    is agentyAuthManager.TokenResult.Success -> {
+                        agentyClient.connect(result.token, force = force)
+                    }
+                    is agentyAuthManager.TokenResult.Failure -> {
+                        Log.w(TAG, "Token fetch failed: ${result.message}")
+                        agentyClient.log("Token fetch failed: ${result.message}")
+                        agentyClient.connect(authManager.getCachedToken(), force = force)
+                    }
+                }
+            } else {
+                Log.d(TAG, "No secrets configured and not logged in, skipping connect")
+                _socketAuthRequiredEvent.tryEmit(Unit)
+            }
+        }
+    }
+
+    override fun onTerminate() {
+        super.onTerminate()
+        agentyClient.destroy()
+    }
+
+    companion object {
+        private const val TAG = "AuakClawApp"
+        lateinit var instance: AuakClawApp
+            private set
+
+        private val APP_ID = BuildConfig.agenty_APP_ID
+        private val APP_SECRET = BuildConfig.agenty_APP_SECRET
+    }
+}
